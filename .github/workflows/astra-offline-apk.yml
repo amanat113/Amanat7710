@@ -48,6 +48,12 @@ jobs:
           tar -xJf astra-source.tar.xz
           test -f AstraVoicePro-0.6.0-offline/app/build.gradle.kts
 
+      - name: Apply Android resource compatibility fixes
+        shell: bash
+        run: |
+          sed -i 's/@string\/accessibility_service_description/@string\/accessibility_description/' AstraVoicePro-0.6.0-offline/app/src/main/res/xml/accessibility_service_config.xml
+          sed -i '/android:supportsLaunchFromKeyguard=/d' AstraVoicePro-0.6.0-offline/app/src/main/res/xml/voice_interaction_service.xml
+
       - name: Unit tests
         id: unit_tests
         continue-on-error: true
