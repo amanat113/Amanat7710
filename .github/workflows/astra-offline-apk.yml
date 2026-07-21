@@ -1,0 +1,109 @@
+name: Build Astra Offline APK
+
+on:
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and build installable APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 16 SDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Restore and verify source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat astra-offline/source.part00 astra-offline/source.part01 astra-offline/source.part02 | base64 --decode > astra-source.tar.xz
+          cat astra-offline/source.tail.hex00 astra-offline/source.tail.hex01 astra-offline/source.tail.hex02 | tr -d '\n\r ' | xxd -r -p >> astra-source.tar.xz
+          echo "18f15a1e3bf2a7114b759a1c452518b08121ffe7bc22d26d47a9df46967b5f45  astra-source.tar.xz" | sha256sum --check
+          tar -xJf astra-source.tar.xz
+          test -f AstraVoicePro-0.6.0-offline/app/build.gradle.kts
+
+      - name: Apply Android and Compose compatibility fixes
+        shell: bash
+        run: |
+          sed -i 's/@string\/accessibility_service_description/@string\/accessibility_description/' AstraVoicePro-0.6.0-offline/app/src/main/res/xml/accessibility_service_config.xml
+          sed -i '/android:supportsLaunchFromKeyguard=/d' AstraVoicePro-0.6.0-offline/app/src/main/res/xml/voice_interaction_service.xml
+          sed -i '/import androidx.compose.foundation.layout.weight/d' AstraVoicePro-0.6.0-offline/app/src/main/java/com/astra/voicepro/ui/AstraScreen.kt
+          sed -i 's/Modifier.weight(1f)/Modifier.fillMaxWidth(0.48f)/g' AstraVoicePro-0.6.0-offline/app/src/main/java/com/astra/voicepro/ui/AstraScreen.kt
+
+      - name: Unit tests
+        id: unit_tests
+        continue-on-error: true
+        working-directory: AstraVoicePro-0.6.0-offline
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace testDebugUnitTest 2>&1 | tee ../unit-tests.log
+
+      - name: Build debug APK
+        id: apk_build
+        continue-on-error: true
+        working-directory: AstraVoicePro-0.6.0-offline
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace assembleDebug 2>&1 | tee ../apk-build.log
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AstraVoicePro-0.6.0-build-logs
+          path: |
+            unit-tests.log
+            apk-build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Verify APK
+        if: steps.apk_build.outcome == 'success'
+        shell: bash
+        run: |
+          test -s AstraVoicePro-0.6.0-offline/app/build/outputs/apk/debug/app-debug.apk
+          cp AstraVoicePro-0.6.0-offline/app/build/outputs/apk/debug/app-debug.apk AstraVoicePro-0.6.0-offline.apk
+          sha256sum AstraVoicePro-0.6.0-offline.apk > AstraVoicePro-0.6.0-offline.apk.sha256
+
+      - name: Upload installable APK
+        if: steps.apk_build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AstraVoicePro-0.6.0-offline-apk
+          path: |
+            AstraVoicePro-0.6.0-offline.apk
+            AstraVoicePro-0.6.0-offline.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail workflow when APK build fails
+        if: steps.apk_build.outcome != 'success'
+        run: exit 1
